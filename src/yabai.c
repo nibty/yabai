@@ -21,8 +21,8 @@
 #define HELP_OPT_SHRT           "-h"
 
 #define MAJOR  7
-#define MINOR  0
-#define PATCH  2
+#define MINOR  1
+#define PATCH  1
 
 struct signal *g_signal_event[SIGNAL_TYPE_COUNT];
 struct process_manager g_process_manager;
@@ -256,6 +256,7 @@ static void parse_arguments(int argc, char **argv)
     }
 }
 
+#ifndef TESTS
 int main(int argc, char **argv)
 {
     if (argc > 1) {
@@ -339,5 +340,6 @@ int main(int argc, char **argv)
 
     return 0;
 }
+#endif
 
 PROFILER_END_TRANSLATION_UNIT;

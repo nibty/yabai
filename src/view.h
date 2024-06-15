@@ -4,7 +4,53 @@
 #define AX_ABS(a, b) (((a) - (b) < 0) ? (((a) - (b)) * -1) : ((a) - (b)))
 #define AX_DIFF(a, b) (AX_ABS(a, b) >= 1.5f)
 
-struct window;
+enum space_property
+{
+    SPACE_PROPERTY_ID            = 0x001,
+    SPACE_PROPERTY_UUID          = 0x002,
+    SPACE_PROPERTY_INDEX         = 0x004,
+    SPACE_PROPERTY_LABEL         = 0x008,
+    SPACE_PROPERTY_TYPE          = 0x010,
+    SPACE_PROPERTY_DISPLAY       = 0x020,
+    SPACE_PROPERTY_WINDOWS       = 0x040,
+    SPACE_PROPERTY_FIRST_WINDOW  = 0x080,
+    SPACE_PROPERTY_LAST_WINDOW   = 0x100,
+    SPACE_PROPERTY_HAS_FOCUS     = 0x200,
+    SPACE_PROPERTY_IS_VISIBLE    = 0x400,
+    SPACE_PROPERTY_IS_FULLSCREEN = 0x800
+};
+
+static uint64_t space_property_val[] =
+{
+    [0x0] = SPACE_PROPERTY_ID,
+    [0x1] = SPACE_PROPERTY_UUID,
+    [0x2] = SPACE_PROPERTY_INDEX,
+    [0x3] = SPACE_PROPERTY_LABEL,
+    [0x4] = SPACE_PROPERTY_TYPE,
+    [0x5] = SPACE_PROPERTY_DISPLAY,
+    [0x6] = SPACE_PROPERTY_WINDOWS,
+    [0x7] = SPACE_PROPERTY_FIRST_WINDOW,
+    [0x8] = SPACE_PROPERTY_LAST_WINDOW,
+    [0x9] = SPACE_PROPERTY_HAS_FOCUS,
+    [0xA] = SPACE_PROPERTY_IS_VISIBLE,
+    [0xB] = SPACE_PROPERTY_IS_FULLSCREEN
+};
+
+static char *space_property_str[] =
+{
+    "id",
+    "uuid",
+    "index",
+    "label",
+    "type",
+    "display",
+    "windows",
+    "first-window",
+    "last-window",
+    "has-focus",
+    "is-visible",
+    "is-native-fullscreen"
+};
 
 struct area
 {
@@ -14,6 +60,7 @@ struct area
     float h;
 };
 
+struct window;
 struct window_capture
 {
     struct window *window;
@@ -127,29 +174,40 @@ static const char *view_type_str[] =
     "float"
 };
 
+enum view_flag
+{
+    VIEW_LAYOUT         = 0x001,
+    VIEW_TOP_PADDING    = 0x002,
+    VIEW_BOTTOM_PADDING = 0x004,
+    VIEW_LEFT_PADDING   = 0x008,
+    VIEW_RIGHT_PADDING  = 0x010,
+    VIEW_WINDOW_GAP     = 0x020,
+    VIEW_AUTO_BALANCE   = 0x040,
+    VIEW_ENABLE_PADDING = 0x080,
+    VIEW_ENABLE_GAP     = 0x100,
+    VIEW_IS_VALID       = 0x200,
+    VIEW_IS_DIRTY       = 0x400,
+};
+
 struct view
 {
-    CFStringRef suuid;
+    CFStringRef uuid;
     uint64_t sid;
     struct window_node *root;
-    enum view_type layout;
     uint32_t insertion_point;
+    enum view_type layout;
     int top_padding;
     int bottom_padding;
     int left_padding;
     int right_padding;
     int window_gap;
-    bool custom_layout;
-    bool custom_top_padding;
-    bool custom_bottom_padding;
-    bool custom_left_padding;
-    bool custom_right_padding;
-    bool custom_window_gap;
-    bool enable_padding;
-    bool enable_gap;
-    bool is_valid;
-    bool is_dirty;
+    bool auto_balance;
+    uint64_t flags;
 };
+
+#define view_check_flag(v, x) ((v)->flags  &  (x))
+#define view_clear_flag(v, x) ((v)->flags &= ~(x))
+#define view_set_flag(v, x)   ((v)->flags |=  (x))
 
 void insert_feedback_show(struct window_node *node);
 void insert_feedback_destroy(struct window_node *node);
@@ -174,7 +232,7 @@ struct window_node *view_remove_window_node(struct view *view, struct window *wi
 uint32_t *view_find_window_list(struct view *view, int *window_count);
 uint32_t view_window_count(struct view *view);
 
-void view_serialize(FILE *rsp, struct view *view);
+void view_serialize(FILE *rsp, struct view *view, uint64_t flags);
 bool view_is_invalid(struct view *view);
 bool view_is_dirty(struct view *view);
 void view_flush(struct view *view);

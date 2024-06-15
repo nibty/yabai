@@ -2,12 +2,12 @@
 .\"     Title: yabai
 .\"    Author: [see the "AUTHOR(S)" section]
 .\" Generator: Asciidoctor 2.0.20
-.\"      Date: 2024-03-12
+.\"      Date: 2024-04-04
 .\"    Manual: Yabai Manual
 .\"    Source: Yabai
 .\"  Language: English
 .\"
-.TH "YABAI" "1" "2024-03-12" "Yabai" "Yabai Manual"
+.TH "YABAI" "1" "2024-04-04" "Yabai" "Yabai Manual"
 .ie \n(.g .ds Aq \(aq
 .el       .ds Aq '
 .ss \n[.ss] 0
@@ -96,6 +96,10 @@ Send message to a running instance of yabai.
 \fB\-\-config\fP, \fB\-c\fP \fI<config_file>\fP
 .RS 4
 Use the specified configuration file.
+.br
+Executes using \f(CR/usr/bin/env sh \-c <config_file>\fP if the exec\-bit is set.
+.br
+Interpreted using \f(CR/usr/bin/env sh <config_file>\fP if the exec\-bit is unset.
 .RE
 .sp
 \fB\-\-verbose\fP, \fB\-V\fP
@@ -312,11 +316,6 @@ Specify how a window should be split.
 \fIauto\fP: The axis is determined based on width/height ratio.
 .RE
 .sp
-\fBauto_balance\fP [\fI<BOOL_SEL>\fP]
-.RS 4
-Balance the window tree upon change, so that all windows occupy the same area.
-.RE
-.sp
 \fBmouse_modifier\fP [\fIcmd|alt|shift|ctrl|fn\fP]
 .RS 4
 Keyboard modifier used for moving and resizing windows.
@@ -366,6 +365,11 @@ Padding added at the right side of the selected space.
 \fBwindow_gap\fP [\fI<integer number>\fP]
 .RS 4
 Size of the gap that separates windows for the selected space.
+.RE
+.sp
+\fBauto_balance\fP [\fI<BOOL_SEL>\fP]
+.RS 4
+Balance the window tree upon change, so that all windows occupy the same area.
 .RE
 .SS "Display"
 .SS "General Syntax"
@@ -614,11 +618,11 @@ If type is \fIrel\fP the split ratio of the selected window is changed by \fIdr\
 A positive/negative delta will increase/decrease the size of the left\-child.
 .RE
 .sp
-\fB\-\-toggle\fP \fIfloat|sticky|pip|shadow|split|zoom\-parent|zoom\-fullscreen|native\-fullscreen|expose\fP
+\fB\-\-toggle\fP \fIfloat|sticky|pip|shadow|split|zoom\-parent|zoom\-fullscreen|native\-fullscreen|expose|<LABEL>\fP
 .RS 4
 Toggle the given property of the selected window.
 .br
-The following properties require System Integrity Protection to be partially disabled: sticky, pip, shadow.
+The following properties require System Integrity Protection to be partially disabled: sticky, pip, shadow, LABEL (scratchpad identifier) .
 .RE
 .sp
 \fB\-\-sub\-layer\fP \fI<LAYER>\fP
@@ -642,10 +646,45 @@ Specify the value \fI0.0\fP to reset back to full opacity and make it become aut
 .br
 System Integrity Protection must be partially disabled.
 .RE
+.sp
+\fB\-\-raise\fP [\fI<WINDOW_SEL>\fP]
+.RS 4
+Orders the selected window above the given window, or to the front within its layer.
+.br
+System Integrity Protection must be partially disabled.
+.RE
+.sp
+\fB\-\-lower\fP [\fI<WINDOW_SEL>\fP]
+.RS 4
+Orders the selected window below the given window, or to the back within its layer.
+.br
+System Integrity Protection must be partially disabled.
+.RE
+.sp
+\fB\-\-scratchpad\fP [\fI<LABEL>|recover\fP]
+.RS 4
+Unique identifier used to identify a window scratchpad.
+.br
+An identifier may only be assigned to a single window at any given time.
+.br
+A scratchpad window will automatically be treated as a (manage=off) floating window.
+.br
+If the scratchpad is already taken by another window, this assignment will fail.
+.br
+If the scratchpad is re\-assigned, the previous identifier will become available.
+.br
+If no value is given, the window will seize to be a scratchpad window.
+.br
+The special value \fIrecover\fP can be used to forcefully bring all scratchpad windows to the front.
+.br
+This can be useful if windows become inaccessible due to a restart or crash.
+.br
+System Integrity Protection must be partially disabled.
+.RE
 .SS "Query"
 .SS "General Syntax"
 .sp
-yabai \-m query \fI<COMMAND>\fP [\fI<ARGUMENT>\fP]
+yabai \-m query \fI<COMMAND>\fP [\fI<PROPERTIES>\fP] [\fI<ARGUMENT>\fP]
 .SS "COMMAND"
 .sp
 \fB\-\-displays\fP
@@ -678,6 +717,11 @@ Constrain matches to the selected space.
 .RS 4
 Constrain matches to the selected window.
 .RE
+.SS "PROPERTIES"
+.sp
+A comma\-separated string containing the name of fields to include in the output.
+.br
+The name of the provided fields must be present in the dataformat of the corresponding entity.
 .SS "DATAFORMAT"
 .sp
 DISPLAY
@@ -736,6 +780,7 @@ WINDOW
     "pid": number,
     "app": string,
     "title": string,
+    "scratchpad": string,
     "frame": object {
         "x": number,
         "y": number,
@@ -810,7 +855,9 @@ All rules that match the given filter will be applied in the order they were reg
 .br
 If multiple rules specify a value for the same property, the latter rule will end up overriding that value.
 .br
-The following properties require System Integrity Protection to be partially disabled: sticky, sub\-layer, opacity.
+If the display and space properties are both set, the space property will take precedence.
+.br
+The following properties require System Integrity Protection to be partially disabled: sticky, sub\-layer, opacity, scratchpad.
 .SS "General Syntax"
 .sp
 yabai \-m rule \fI<COMMAND>\fP
@@ -894,6 +941,8 @@ Most windows will be managed automatically, so this should mainly be used to mak
 \fBsticky=\fI<BOOL_SEL>\fP\fP
 .RS 4
 Window appears on all spaces.
+.br
+System Integrity Protection must be partially disabled.
 .RE
 .sp
 \fBmouse_follows_focus=\fI<BOOL_SEL>\fP\fP
@@ -908,6 +957,8 @@ Window is ordered within the given stacking sub\-layer.
 The window will no longer be eligible for automatic change in sub\-layer when managed/unmanaged.
 .br
 Specify the value \fIauto\fP to reset back to normal and make it become automatically managed.
+.br
+System Integrity Protection must be partially disabled.
 .RE
 .sp
 \fBopacity=\fI<FLOAT_SEL>\fP\fP
@@ -917,6 +968,8 @@ Set window opacity.
 The window will no longer be eligible for automatic change in opacity upon focus change.
 .br
 Specify the value \fI0.0\fP to reset back to full opacity and make it become automatically managed.
+.br
+System Integrity Protection must be partially disabled.
 .RE
 .sp
 \fBnative\-fullscreen=\fI<BOOL_SEL>\fP\fP
@@ -927,6 +980,19 @@ Window should enter native macOS fullscreen mode.
 \fBgrid=\fI<rows>:<cols>:<start\-x>:<start\-y>:<width>:<height>\fP\fP
 .RS 4
 Set window frame based on a self\-defined grid.
+.RE
+.sp
+\fBscratchpad=\fI<LABEL>\fP\fP
+.RS 4
+Unique identifier used to identify a window scratchpad.
+.br
+An identifier may only be assigned to a single window at any given time.
+.br
+A scratchpad window will automatically be treated as a (manage=off) floating window.
+.br
+If this rule matches multiple windows, only the first window that matched will be assigned this scratchpad identifier.
+.br
+System Integrity Protection must be partially disabled.
 .RE
 .SS "DATAFORMAT"
 .sp
@@ -950,6 +1016,7 @@ Set window frame based on a self\-defined grid.
     "sub\-layer": string,
     "native\-fullscreen": bool (optional),
     "grid": string,
+    "scratchpad": string,
     "one\-shot": bool,
     "flags": string
 }

@@ -65,6 +65,12 @@ static const char *window_origin_mode_str[] =
     "cursor"
 };
 
+struct scratchpad
+{
+    char *label;
+    struct window *window;
+};
+
 struct window_manager
 {
     AXUIElementRef system_element;
@@ -93,12 +99,13 @@ struct window_manager
     float window_animation_duration;
     int window_animation_easing;
     struct rgba_color insert_feedback_color;
+    struct scratchpad *scratchpad_window;
 };
 
 void window_manager_query_window_rules(FILE *rsp);
-void window_manager_query_windows_for_spaces(FILE *rsp, uint64_t *space_list, int space_count);
-void window_manager_query_windows_for_display(FILE *rsp, uint32_t did);
-void window_manager_query_windows_for_displays(FILE *rsp);
+void window_manager_query_windows_for_spaces(FILE *rsp, uint64_t *space_list, int space_count, uint64_t flags);
+void window_manager_query_windows_for_display(FILE *rsp, uint32_t did, uint64_t flags);
+void window_manager_query_windows_for_displays(FILE *rsp, uint64_t flags);
 bool window_manager_rule_matches_window(struct rule *rule, struct window *window, char *window_title, char *window_role, char *window_subrole);
 void window_manager_apply_manage_rule_effects_to_window(struct space_manager *sm, struct window_manager *wm, struct window *window, struct rule_effects *effects, char *window_title, char *window_role, char *window_subrole);
 void window_manager_apply_rule_effects_to_window(struct space_manager *sm, struct window_manager *wm, struct window *window, struct rule_effects *effects, char *window_title, char *window_role, char *window_subrole);
@@ -180,7 +187,7 @@ bool window_manager_close_window(struct window *window);
 void window_manager_send_window_to_space(struct space_manager *sm, struct window_manager *wm, struct window *window, uint64_t sid, bool moved_by_rule);
 struct window *window_manager_create_and_add_window(struct space_manager *sm, struct window_manager *wm, struct application *application, AXUIElementRef window_ref, uint32_t window_id, bool one_shot_rules);
 struct window **window_manager_add_application_windows(struct space_manager *sm, struct window_manager *wm, struct application *application, int *count);
-void window_manager_add_existing_application_windows(struct space_manager *sm, struct window_manager *wm, struct application *application, int refresh_index);
+bool window_manager_add_existing_application_windows(struct space_manager *sm, struct window_manager *wm, struct application *application, int refresh_index);
 enum window_op_error window_manager_apply_grid(struct space_manager *sm, struct window_manager *wm, struct window *window, unsigned r, unsigned c, unsigned x, unsigned y, unsigned w, unsigned h);
 void window_manager_purify_window(struct window_manager *wm, struct window *window);
 void window_manager_make_window_floating(struct space_manager *sm, struct window_manager *wm, struct window *window, bool should_float, bool force);
@@ -193,6 +200,11 @@ void window_manager_toggle_window_fullscreen(struct space_manager *sm, struct wi
 void window_manager_toggle_window_native_fullscreen(struct space_manager *sm, struct window_manager *wm, struct window *window);
 void window_manager_toggle_window_expose(struct window_manager *wm, struct window *window);
 void window_manager_toggle_window_pip(struct space_manager *sm, struct window_manager *wm, struct window *window);
+bool window_manager_toggle_scratchpad_window_by_label(struct window_manager *wm, char *label);
+bool window_manager_toggle_scratchpad_window(struct window_manager *wm, struct window *window, int forced_mode);
+bool window_manager_set_scratchpad_for_window(struct window_manager *wm, struct window *window, char *label);
+bool window_manager_remove_scratchpad_for_window(struct window_manager *wm, struct window *window, bool unfloat);
+void window_manager_scratchpad_recover_windows(void);
 void window_manager_wait_for_native_fullscreen_transition(struct window *window);
 void window_manager_validate_and_check_for_windows_on_space(struct space_manager *sm, struct window_manager *wm, uint64_t sid);
 void window_manager_correct_for_mission_control_changes(struct space_manager *sm, struct window_manager *wm);

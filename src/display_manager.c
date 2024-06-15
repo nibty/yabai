@@ -2,7 +2,7 @@ extern struct display_manager g_display_manager;
 extern struct window_manager g_window_manager;
 extern int g_connection;
 
-bool display_manager_query_displays(FILE *rsp)
+bool display_manager_query_displays(FILE *rsp, uint64_t flags)
 {
     TIME_FUNCTION;
 
@@ -12,7 +12,7 @@ bool display_manager_query_displays(FILE *rsp)
 
     fprintf(rsp, "[");
     for (int i = 0; i < count; ++i) {
-        display_serialize(rsp, display_list[i]);
+        display_serialize(rsp, display_list[i], flags);
         fprintf(rsp, "%c", i < count - 1 ? ',' : ']');
     }
     fprintf(rsp, "\n");
@@ -273,14 +273,14 @@ uint32_t display_manager_find_closest_display_in_direction(uint32_t source_did, 
     int best_distance = INT_MAX;
 
     struct area source_area = area_from_cgrect(CGDisplayBounds(source_did));
-    CGPoint source_area_max = { source_area.x + source_area.w - 1, source_area.y + source_area.h - 1};
+    CGPoint source_area_max = area_max_point(source_area);
 
     for (int i = 0; i < display_count; ++i) {
         uint32_t did = display_list[i];
         if (did == source_did) continue;
 
         struct area target_area = area_from_cgrect(CGDisplayBounds(did));
-        CGPoint target_area_max = { target_area.x + target_area.w - 1, target_area.y + target_area.h - 1};
+        CGPoint target_area_max = area_max_point(target_area);
 
         if (area_is_in_direction(&source_area, source_area_max, &target_area, target_area_max, direction)) {
             int distance = area_distance_in_direction(&source_area, source_area_max, &target_area, target_area_max, direction);

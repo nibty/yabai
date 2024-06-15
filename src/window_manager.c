@@ -1,6 +1,7 @@
 extern mach_port_t g_bs_port;
 extern uint8_t *g_event_bytes;
 extern struct event_loop g_event_loop;
+extern void *g_workspace_context;
 extern struct process_manager g_process_manager;
 extern struct mouse_state g_mouse_state;
 extern double g_cv_host_clock_frequency;
@@ -17,7 +18,7 @@ static TABLE_COMPARE_FUNC(compare_wm)
 
 bool window_manager_is_window_eligible(struct window *window)
 {
-    bool result = window->is_root && (window_is_real(window) || window_rule_check_flag(window, WINDOW_RULE_MANAGED));
+    bool result = window->is_root && (window_is_real(window) || window_check_rule_flag(window, WINDOW_RULE_MANAGED));
     return result;
 }
 
@@ -34,7 +35,7 @@ void window_manager_query_window_rules(FILE *rsp)
     fprintf(rsp, "]\n");
 }
 
-void window_manager_query_windows_for_spaces(FILE *rsp, uint64_t *space_list, int space_count)
+void window_manager_query_windows_for_spaces(FILE *rsp, uint64_t *space_list, int space_count, uint64_t flags)
 {
     TIME_FUNCTION;
 
@@ -44,22 +45,22 @@ void window_manager_query_windows_for_spaces(FILE *rsp, uint64_t *space_list, in
     fprintf(rsp, "[");
     for (int i = 0; i < window_count; ++i) {
         struct window *window = window_manager_find_window(&g_window_manager, window_list[i]);
-        if (window) window_serialize(rsp, window); else window_nonax_serialize(rsp, window_list[i]);
+        if (window) window_serialize(rsp, window, flags); else window_nonax_serialize(rsp, window_list[i], flags);
         if (i < window_count - 1) fprintf(rsp, ",");
     }
     fprintf(rsp, "]\n");
 }
 
-void window_manager_query_windows_for_display(FILE *rsp, uint32_t did)
+void window_manager_query_windows_for_display(FILE *rsp, uint32_t did, uint64_t flags)
 {
     TIME_FUNCTION;
 
     int space_count = 0;
     uint64_t *space_list = display_space_list(did, &space_count);
-    window_manager_query_windows_for_spaces(rsp, space_list, space_count);
+    window_manager_query_windows_for_spaces(rsp, space_list, space_count, flags);
 }
 
-void window_manager_query_windows_for_displays(FILE *rsp)
+void window_manager_query_windows_for_displays(FILE *rsp, uint64_t flags)
 {
     TIME_FUNCTION;
 
@@ -84,7 +85,7 @@ void window_manager_query_windows_for_displays(FILE *rsp)
         space_count += count;
     }
 
-    window_manager_query_windows_for_spaces(rsp, space_list, space_count);
+    window_manager_query_windows_for_spaces(rsp, space_list, space_count, flags);
 }
 
 bool window_manager_rule_matches_window(struct rule *rule, struct window *window, char *window_title, char *window_role, char *window_subrole)
@@ -107,10 +108,10 @@ bool window_manager_rule_matches_window(struct rule *rule, struct window *window
 void window_manager_apply_manage_rule_effects_to_window(struct space_manager *sm, struct window_manager *wm, struct window *window, struct rule_effects *effects, char *window_title, char *window_role, char *window_subrole)
 {
     if (effects->manage == RULE_PROP_ON) {
-        window_rule_set_flag(window, WINDOW_RULE_MANAGED);
+        window_set_rule_flag(window, WINDOW_RULE_MANAGED);
         window_manager_make_window_floating(sm, wm, window, false, true);
     } else if (effects->manage == RULE_PROP_OFF) {
-        window_rule_clear_flag(window, WINDOW_RULE_MANAGED);
+        window_clear_rule_flag(window, WINDOW_RULE_MANAGED);
         window_manager_make_window_floating(sm, wm, window, true, true);
     }
 }
@@ -119,7 +120,7 @@ void window_manager_apply_rule_effects_to_window(struct space_manager *sm, struc
 {
     if (effects->sid || effects->did) {
         if (!window_is_fullscreen(window) && !space_is_fullscreen(window_space(window->id))) {
-            uint64_t sid = effects->did ? display_space_id(effects->did) : effects->sid;
+            uint64_t sid = effects->sid ? effects->sid : display_space_id(effects->did);
             window_manager_send_window_to_space(sm, wm, window, sid, true);
             if (rule_effects_check_flag(effects, RULE_FOLLOW_SPACE) || effects->fullscreen == RULE_PROP_ON) {
                 space_manager_focus_space(sid);
@@ -134,11 +135,11 @@ void window_manager_apply_rule_effects_to_window(struct space_manager *sm, struc
     }
 
     if (effects->mff == RULE_PROP_ON) {
-        window_rule_set_flag(window, WINDOW_RULE_MFF);
-        window_rule_set_flag(window, WINDOW_RULE_MFF_VALUE);
+        window_set_rule_flag(window, WINDOW_RULE_MFF);
+        window_set_rule_flag(window, WINDOW_RULE_MFF_VALUE);
     } else if (effects->mff == RULE_PROP_OFF) {
-        window_rule_set_flag(window, WINDOW_RULE_MFF);
-        window_rule_clear_flag(window, WINDOW_RULE_MFF_VALUE);
+        window_set_rule_flag(window, WINDOW_RULE_MFF);
+        window_clear_rule_flag(window, WINDOW_RULE_MFF_VALUE);
     }
 
     if (rule_effects_check_flag(effects, RULE_LAYER)) {
@@ -152,7 +153,14 @@ void window_manager_apply_rule_effects_to_window(struct space_manager *sm, struc
 
     if (effects->fullscreen == RULE_PROP_ON) {
         AXUIElementSetAttributeValue(window->ref, kAXFullscreenAttribute, kCFBooleanTrue);
-        window_rule_set_flag(window, WINDOW_RULE_FULLSCREEN);
+        window_set_rule_flag(window, WINDOW_RULE_FULLSCREEN);
+    }
+
+    if (effects->scratchpad) {
+        char *scratchpad = string_copy(effects->scratchpad);
+        if (!window_manager_set_scratchpad_for_window(wm, window, scratchpad)) {
+            free(scratchpad);
+        }
     }
 
     if (effects->grid[0] != 0 && effects->grid[1] != 0) {
@@ -192,7 +200,7 @@ void window_manager_apply_rules_to_window(struct space_manager *sm, struct windo
     for (int i = 0; i < buf_len(wm->rules); ++i) {
         if (one_shot_rules || !rule_check_flag(&wm->rules[i], RULE_ONE_SHOT)) {
             if (window_manager_rule_matches_window(&wm->rules[i], window, window_title, window_role, window_subrole)) {
-                if (!window_rule_check_flag(window, WINDOW_RULE_MANAGED)) {
+                if (!window_check_rule_flag(window, WINDOW_RULE_MANAGED)) {
                     if (!rule_check_flag(&wm->rules[i], RULE_ROLE_VALID)    && !string_equals(window_role   , "AXWindow"))         continue;
                     if (!rule_check_flag(&wm->rules[i], RULE_SUBROLE_VALID) && !string_equals(window_subrole, "AXStandardWindow")) continue;
                 }
@@ -241,8 +249,8 @@ void window_manager_set_window_opacity_enabled(struct window_manager *wm, bool e
 
 void window_manager_center_mouse(struct window_manager *wm, struct window *window)
 {
-    if (window_rule_check_flag(window, WINDOW_RULE_MFF)) {
-        if (!window_rule_check_flag(window, WINDOW_RULE_MFF_VALUE)) {
+    if (window_check_rule_flag(window, WINDOW_RULE_MFF)) {
+        if (!window_check_rule_flag(window, WINDOW_RULE_MFF_VALUE)) {
             return;
         }
     } else {
@@ -273,11 +281,11 @@ bool window_manager_should_manage_window(struct window *window)
 {
     if (!window->is_root)                           return false;
     if (window_check_flag(window, WINDOW_FLOAT))    return false;
-    if (window_is_sticky(window))                   return false;
+    if (window_is_sticky(window->id))               return false;
     if (window_check_flag(window, WINDOW_MINIMIZE)) return false;
     if (window->application->is_hidden)             return false;
 
-    return (window_is_standard(window) && window_level_is_standard(window) && window_can_move(window)) || window_rule_check_flag(window, WINDOW_RULE_MANAGED);
+    return (window_is_standard(window) && window_level_is_standard(window) && window_can_move(window)) || window_check_rule_flag(window, WINDOW_RULE_MANAGED);
 }
 
 struct view *window_manager_find_managed_window(struct window_manager *wm, struct window *window)
@@ -321,7 +329,7 @@ enum window_op_error window_manager_adjust_window_ratio(struct window_manager *w
     if (space_is_visible(view->sid)) {
         window_node_flush(node->parent);
     } else {
-        view->is_dirty = true;
+        view_set_flag(view, VIEW_IS_DIRTY);
     }
 
     return WINDOW_OP_ERROR_SUCCESS;
@@ -405,7 +413,7 @@ enum window_op_error window_manager_resize_window_relative(struct window_manager
                 AX_ENHANCED_UI_WORKAROUND(window->application->ref, { window_manager_resize_window(window, dx, dy); });
             }
         } else {
-            window_manager_resize_window_relative_internal(window, window->frame, direction, dx, dy, animate);
+            window_manager_resize_window_relative_internal(window, window_ax_frame(window), direction, dx, dy, animate);
         }
     }
 
@@ -1513,14 +1521,14 @@ struct window *window_manager_create_and_add_window(struct space_manager *sm, st
             if (application->is_hidden)                              goto out;
             if (window_check_flag(window, WINDOW_MINIMIZE))          goto out;
             if (window_check_flag(window, WINDOW_FULLSCREEN))        goto out;
-            if (window_rule_check_flag(window, WINDOW_RULE_MANAGED)) goto out;
+            if (window_check_rule_flag(window, WINDOW_RULE_MANAGED)) goto out;
 
-            if (window_rule_check_flag(window, WINDOW_RULE_FULLSCREEN)) {
-                window_rule_clear_flag(window, WINDOW_RULE_FULLSCREEN);
+            if (window_check_rule_flag(window, WINDOW_RULE_FULLSCREEN)) {
+                window_clear_rule_flag(window, WINDOW_RULE_FULLSCREEN);
                 goto out;
             }
 
-            if (window_is_sticky(window) ||
+            if (window_is_sticky(window->id) ||
                 !window_can_move(window) ||
                 !window_is_standard(window) ||
                 !window_level_is_standard(window) ||
@@ -1538,7 +1546,7 @@ struct window *window_manager_create_and_add_window(struct space_manager *sm, st
 
             if (g_verbose) {
                 fprintf(stdout, "window info: \n");
-                window_serialize(stdout, window);
+                window_serialize(stdout, window, 0);
                 fprintf(stdout, "\n");
             }
         }
@@ -1552,7 +1560,7 @@ struct window *window_manager_create_and_add_window(struct space_manager *sm, st
 
         if (g_verbose) {
             fprintf(stdout, "window info: \n");
-            window_serialize(stdout, window);
+            window_serialize(stdout, window, 0);
             fprintf(stdout, "\n");
         }
     }
@@ -1619,14 +1627,16 @@ static uint32_t *window_manager_existing_application_window_list(struct applicat
         space_count += count;
     }
 
-    return space_list ? space_window_list_for_connection(space_list, space_count, application->connection, window_count, true) : NULL;
+    return space_list ? space_window_list_for_connection(space_list, space_count, application ? application->connection : 0, window_count, true) : NULL;
 }
 
-void window_manager_add_existing_application_windows(struct space_manager *sm, struct window_manager *wm, struct application *application, int refresh_index)
+bool window_manager_add_existing_application_windows(struct space_manager *sm, struct window_manager *wm, struct application *application, int refresh_index)
 {
+    bool result = false;
+
     int global_window_count;
     uint32_t *global_window_list = window_manager_existing_application_window_list(application, &global_window_count);
-    if (!global_window_list) return;
+    if (!global_window_list) return result;
 
     CFArrayRef window_list_ref = application_window_list(application);
     int window_count = window_list_ref ? CFArrayGetCount(window_list_ref) : 0;
@@ -1660,6 +1670,7 @@ void window_manager_add_existing_application_windows(struct space_manager *sm, s
         if (refresh_index != -1) {
             debug("%s: all windows for %s are now resolved\n", __FUNCTION__, application->name);
             buf_del(wm->applications_to_refresh, refresh_index);
+            result = true;
         }
     } else {
         bool missing_window = false;
@@ -1677,10 +1688,13 @@ void window_manager_add_existing_application_windows(struct space_manager *sm, s
         } else if (refresh_index != -1 && !missing_window) {
             debug("%s: all windows for %s are now resolved\n", __FUNCTION__, application->name);
             buf_del(wm->applications_to_refresh, refresh_index);
+            result = true;
         }
     }
 
     if (window_list_ref) CFRelease(window_list_ref);
+
+    return result;
 }
 
 enum window_op_error window_manager_set_window_insertion(struct space_manager *sm, struct window_manager *wm, struct window *window, int direction)
@@ -1979,13 +1993,13 @@ enum window_op_error window_manager_swap_window(struct space_manager *sm, struct
     if (a_visible) {
         window_node_capture_windows(a_node, &window_list);
     } else {
-        a_view->is_dirty = true;
+        view_set_flag(a_view, VIEW_IS_DIRTY);
     }
 
     if (b_visible) {
         window_node_capture_windows(b_node, &window_list);
     } else {
-        b_view->is_dirty = true;
+        view_set_flag(b_view, VIEW_IS_DIRTY);
     }
 
     window_manager_animate_window_list(window_list, ts_buf_len(window_list));
@@ -2079,14 +2093,14 @@ enum window_op_error window_manager_apply_grid(struct space_manager *sm, struct 
     struct view *dview = space_manager_find_view(sm, display_space_id(did));
 
     if (dview) {
-        if (dview->enable_padding) {
+        if (view_check_flag(dview, VIEW_ENABLE_PADDING)) {
             bounds.origin.x    += dview->left_padding;
             bounds.size.width  -= (dview->left_padding + dview->right_padding);
             bounds.origin.y    += dview->top_padding;
             bounds.size.height -= (dview->top_padding + dview->bottom_padding);
         }
 
-        if (dview->enable_gap) {
+        if (view_check_flag(dview, VIEW_ENABLE_GAP)) {
             int gap = window_node_get_gap(dview);
 
             if (x > 0) {
@@ -2123,7 +2137,7 @@ void window_manager_make_window_floating(struct space_manager *sm, struct window
 
     if (!force) {
         if (!window_is_standard(window) || !window_level_is_standard(window) || !window_can_move(window)) {
-            if (!window_rule_check_flag(window, WINDOW_RULE_MANAGED)) {
+            if (!window_check_rule_flag(window, WINDOW_RULE_MANAGED)) {
                 return;
             }
         }
@@ -2278,7 +2292,7 @@ void window_manager_toggle_window_parent(struct space_manager *sm, struct window
         if (space_is_visible(view->sid)) {
             window_node_flush(node);
         } else {
-            view->is_dirty = true;
+            view_set_flag(view, VIEW_IS_DIRTY);
         }
     } else if (node->parent) {
         node->parent->left->zoom = NULL;
@@ -2287,7 +2301,7 @@ void window_manager_toggle_window_parent(struct space_manager *sm, struct window
         if (space_is_visible(view->sid)) {
             window_node_flush(node->parent);
         } else {
-            view->is_dirty = true;
+            view_set_flag(view, VIEW_IS_DIRTY);
         }
     }
 }
@@ -2312,7 +2326,7 @@ void window_manager_toggle_window_fullscreen(struct space_manager *sm, struct wi
         if (space_is_visible(view->sid)) {
             window_node_flush(node);
         } else {
-            view->is_dirty = true;
+            view_set_flag(view, VIEW_IS_DIRTY);
         }
     } else {
         if (sm->autopad->enabled) {
@@ -2322,7 +2336,7 @@ void window_manager_toggle_window_fullscreen(struct space_manager *sm, struct wi
         if (space_is_visible(view->sid)) {
             window_node_flush(node);
         } else {
-            view->is_dirty = true;
+            view_set_flag(view, VIEW_IS_DIRTY);
         }
     }
 }
@@ -2346,7 +2360,7 @@ void window_manager_toggle_window_pip(struct space_manager *sm, struct window_ma
     struct view *dview = space_manager_find_view(sm, sid);
 
     CGRect bounds = display_bounds_constrained(did);
-    if (dview && dview->enable_padding) {
+    if (dview && view_check_flag(dview, VIEW_ENABLE_PADDING)) {
         bounds.origin.x    += dview->left_padding;
         bounds.size.width  -= (dview->left_padding + dview->right_padding);
         bounds.origin.y    += dview->top_padding;
@@ -2354,6 +2368,113 @@ void window_manager_toggle_window_pip(struct space_manager *sm, struct window_ma
     }
 
     scripting_addition_scale_window(window->id, bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height);
+}
+
+static inline struct window *window_manager_find_scratchpad_window(struct window_manager *wm, char *label)
+{
+    for (int i = 0; i < buf_len(wm->scratchpad_window); ++i) {
+        if (string_equals(wm->scratchpad_window[i].label, label)) {
+            return wm->scratchpad_window[i].window;
+        }
+    }
+
+    return NULL;
+}
+
+bool window_manager_toggle_scratchpad_window_by_label(struct window_manager *wm, char *label)
+{
+    struct window *window = window_manager_find_scratchpad_window(wm, label);
+    return window ? window_manager_toggle_scratchpad_window(wm, window, 0) : false;
+}
+
+bool window_manager_toggle_scratchpad_window(struct window_manager *wm, struct window *window, int forced_mode)
+{
+    TIME_FUNCTION;
+
+    uint64_t sid = space_manager_active_space();
+    if (!sid) return false;
+
+    uint8_t visible = 0;
+    uint64_t wid_sid = window_space(window->id);
+    SLSWindowIsOrderedIn(g_connection, window->id, &visible);
+
+    switch (forced_mode) {
+    case 0: goto mode_0;
+    case 1: goto mode_1;
+    case 2: goto mode_2;
+    case 3: goto mode_3;
+    }
+
+mode_0:;
+    if (sid == wid_sid && visible) {
+mode_1:;
+        struct window *next = window_manager_find_window_on_space_by_rank_filtering_window(wm, sid, 1, window->id);
+        if (next) {
+            window_manager_focus_window_with_raise(&next->application->psn, next->id, next->ref);
+        } else {
+            _SLPSSetFrontProcessWithOptions(&g_process_manager.finder_psn, 0, kCPSNoWindows);
+        }
+        scripting_addition_order_window(window->id, 0, 0);
+    } else if (sid == wid_sid && !visible) {
+mode_2:;
+        scripting_addition_order_window(window->id, 1, 0);
+        window_manager_focus_window_with_raise(&window->application->psn, window->id, window->ref);
+    } else {
+mode_3:;
+        space_manager_move_window_to_space(sid, window);
+        scripting_addition_order_window(window->id, 1, 0);
+        window_manager_focus_window_with_raise(&window->application->psn, window->id, window->ref);
+    }
+
+    return true;
+}
+
+bool window_manager_set_scratchpad_for_window(struct window_manager *wm, struct window *window, char *label)
+{
+    struct window *existing_window = window_manager_find_scratchpad_window(wm, label);
+    if (existing_window) return false;
+
+    window_manager_remove_scratchpad_for_window(wm, window, false);
+    buf_push(wm->scratchpad_window, ((struct scratchpad) {
+        .label = label,
+        .window = window
+    }));
+    window->scratchpad = label;
+    window_manager_make_window_floating(&g_space_manager, wm, window, true, false);
+
+    return true;
+}
+
+bool window_manager_remove_scratchpad_for_window(struct window_manager *wm, struct window *window, bool unfloat)
+{
+    for (int i = 0; i < buf_len(wm->scratchpad_window); ++i) {
+        if (wm->scratchpad_window[i].window == window) {
+            window->scratchpad = NULL;
+
+            free(wm->scratchpad_window[i].label);
+            buf_del(wm->scratchpad_window, i);
+
+            if (unfloat) {
+                window_manager_toggle_scratchpad_window(wm, window, 3);
+                window_manager_make_window_floating(&g_space_manager, wm, window, false, false);
+            }
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void window_manager_scratchpad_recover_windows(void)
+{
+    int window_count;
+    uint32_t *window_list = window_manager_existing_application_window_list(NULL, &window_count);
+    if (!window_list) return;
+
+    if (scripting_addition_order_window_in(window_list, window_count)) {
+        space_manager_refresh_application_windows(&g_space_manager);
+    }
 }
 
 static void window_manager_validate_windows_on_space(struct space_manager *sm, struct window_manager *wm, struct view *view, uint32_t *window_list, int window_count)
@@ -2390,7 +2511,7 @@ static void window_manager_validate_windows_on_space(struct space_manager *sm, s
             window_manager_remove_managed_window(wm, window->id);
             window_manager_purify_window(wm, window);
 
-            view->is_dirty = true;
+            view_set_flag(view, VIEW_IS_DIRTY);
         }
     }
 }
@@ -2418,7 +2539,7 @@ static void window_manager_check_for_windows_on_space(struct space_manager *sm, 
             window_manager_adjust_layer(window, LAYER_NORMAL);
             window_manager_remove_managed_window(wm, window->id);
             window_manager_purify_window(wm, window);
-            existing_view->is_dirty = true;
+            view_set_flag(existing_view, VIEW_IS_DIRTY);
         }
 
         if (!existing_view || (existing_view->layout != VIEW_FLOAT && existing_view != view)) {
@@ -2436,7 +2557,7 @@ static void window_manager_check_for_windows_on_space(struct space_manager *sm, 
             view_add_window_node(view, window);
             window_manager_adjust_layer(window, LAYER_BELOW);
             window_manager_add_managed_window(wm, window, view);
-            view->is_dirty = true;
+            view_set_flag(view, VIEW_IS_DIRTY);
         }
     }
 }
@@ -2460,7 +2581,10 @@ void window_manager_validate_and_check_for_windows_on_space(struct space_manager
     // This is necessary to make sure that we do not call the AX API for each modification to the tree.
     //
 
-    if (space_is_visible(view->sid) && view_is_dirty(view)) view_flush(view);
+    if (space_is_visible(view->sid) && view_is_dirty(view)) {
+        window_node_flush(view->root);
+        view_clear_flag(view, VIEW_IS_DIRTY);
+    }
 }
 
 void window_manager_correct_for_mission_control_changes(struct space_manager *sm, struct window_manager *wm)
@@ -2558,14 +2682,19 @@ void window_manager_begin(struct space_manager *sm, struct window_manager *wm)
         while (bucket) {
             if (bucket->value) {
                 struct process *process = bucket->value;
-                struct application *application = application_create(process);
+                if (workspace_application_is_observable(process)) {
+                    struct application *application = application_create(process);
 
-                if (application_observe(application)) {
-                    window_manager_add_application(wm, application);
-                    window_manager_add_existing_application_windows(sm, wm, application, -1);
+                    if (application_observe(application)) {
+                        window_manager_add_application(wm, application);
+                        window_manager_add_existing_application_windows(sm, wm, application, -1);
+                    } else {
+                        application_unobserve(application);
+                        application_destroy(application);
+                    }
                 } else {
-                    application_unobserve(application);
-                    application_destroy(application);
+                    debug("%s: %s (%d) is not observable, subscribing to activationPolicy changes\n", __FUNCTION__, process->name, process->pid);
+                    workspace_application_observe_activation_policy(g_workspace_context, process);
                 }
             }
 

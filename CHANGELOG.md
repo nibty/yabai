@@ -6,6 +6,40 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [7.1.1] - 2024-05-18
+### Changed
+- Assigning a window to scratchpad using rules would incorrectly hide that window immediately [#2203](https://github.com/koekeishiya/yabai/issues/2203)
+- Moving windows to other spaces should once again work on macOS Sonoma 14.5 (and newer) [#2240](https://github.com/koekeishiya/yabai/issues/2240)
+- Update scripting addition for macOS Sonoma 14.5 Intel (Apple Silicon is already supported in v7.1.0) [#2277](https://github.com/koekeishiya/yabai/issues/2277)
+
+## [7.1.0] - 2024-04-04
+### Added
+- Added window commands `--raise ['<WINDOW_SEL>']` and `--lower ['<WINDOW_SEL>']` [#2198](https://github.com/koekeishiya/yabai/issues/2198)
+- Added window commands `--scratchpad ['<LABEL>|recover']` and `--toggle <LABEL>` [#2203](https://github.com/koekeishiya/yabai/issues/2203)
+- Added rule property `scratchpad='<LABEL>'` to automatically assign a window to a scratchpad [#2203](https://github.com/koekeishiya/yabai/issues/2203)
+- Added window and rule query property `scratchpad` [#2203](https://github.com/koekeishiya/yabai/issues/2203)
+
+### Changed
+- Config *global setting* `auto_balance` is now categorized as a *space setting* instead [#2200](https://github.com/koekeishiya/yabai/issues/2200)
+- Rule property space should have higher precedence than display [#2206](https://github.com/koekeishiya/yabai/issues/2206)
+- Properly escape app and title, role and subrole, regex when listing rules [#2205](https://github.com/koekeishiya/yabai/issues/2205)
+- Properly escape app and title regex when listing signals [#2207](https://github.com/koekeishiya/yabai/issues/2207)
+- Fixed issue that could cause a crash when trying to detect windows opened before yabai launch [#2208](https://github.com/koekeishiya/yabai/issues/2208)
+- Fixed issue that could cause a crash when terminating an application in rare cases where there is a large backlog of events [#2210](https://github.com/koekeishiya/yabai/issues/2210)
+
+## [7.0.4] - 2024-03-30
+### Changed
+- Consecutive window resize operations would not work correctly because it used a cached value for the window frame [#2182](https://github.com/koekeishiya/yabai/issues/2182)
+- Fix weird delay caused by interaction between macOS System APIs on Sonoma when using `--insert` in combination with other commands in rapid succession [#2188](https://github.com/koekeishiya/yabai/issues/2188)
+- Change how background processes are detected and handled [#2190](https://github.com/koekeishiya/yabai/issues/2190) [#2168](https://github.com/koekeishiya/yabai/issues/2168) [#2194](https://github.com/koekeishiya/yabai/issues/2194)
+
+## [7.0.3] - 2024-03-22
+### Changed
+- Whitelist zathura process for management because it incorrectly identifies as a background-only process [#2168](https://github.com/koekeishiya/yabai/issues/2168)
+- Config should be executed if the exec-bit is set, but interpreted if it is not [#2169](https://github.com/koekeishiya/yabai/issues/2169)
+- Window query property is-sticky would sometimes show the wrong value [#2175](https://github.com/koekeishiya/yabai/issues/2175)
+- Query commands now take an optional list of properties to select which fields should be included in the output [#2180](https://github.com/koekeishiya/yabai/issues/2180)
+
 ## [7.0.2] - 2024-03-13
 ### Changed
 - Decouple/normalize timer used for mouse_action resize throttling because event timestep varies between macOS versions [#2160](https://github.com/koekeishiya/yabai/issues/2160)
@@ -644,7 +678,11 @@ The *window_destroyed* signal is now triggered for windows that are implicitly d
 ### Added
 - First official release
 
-[Unreleased]: https://github.com/koekeishiya/yabai/compare/v7.0.2...HEAD
+[Unreleased]: https://github.com/koekeishiya/yabai/compare/v7.1.1...HEAD
+[7.1.1]: https://github.com/koekeishiya/yabai/compare/v7.1.0...v7.1.1
+[7.1.0]: https://github.com/koekeishiya/yabai/compare/v7.0.4...v7.1.0
+[7.0.4]: https://github.com/koekeishiya/yabai/compare/v7.0.3...v7.0.4
+[7.0.3]: https://github.com/koekeishiya/yabai/compare/v7.0.2...v7.0.3
 [7.0.2]: https://github.com/koekeishiya/yabai/compare/v7.0.1...v7.0.2
 [7.0.1]: https://github.com/koekeishiya/yabai/compare/v7.0.0...v7.0.1
 [7.0.0]: https://github.com/koekeishiya/yabai/compare/v6.0.15...v7.0.0

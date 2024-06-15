@@ -27,10 +27,10 @@ void insert_feedback_update_notifications(void)
 #define INSERT_FEEDBACK_RADIUS 9
 void insert_feedback_show(struct window_node *node)
 {
-    bool created = false;
     CFTypeRef frame_region;
     CGRect frame = {{node->area.x, node->area.y},{node->area.w, node->area.h}};
     CGSNewRegionWithRect(&frame, &frame_region);
+    frame.origin.x = 0; frame.origin.y = 0;
 
     if (!node->feedback_window.id) {
         uint64_t tags = (1ULL << 1) | (1ULL << 9);
@@ -55,12 +55,15 @@ void insert_feedback_show(struct window_node *node)
                                    g_window_manager.insert_feedback_color.g,
                                    g_window_manager.insert_feedback_color.b,
                                    g_window_manager.insert_feedback_color.a);
+        SLSDisableUpdate(g_connection);
+        CGContextClearRect(node->feedback_window.context, frame);
+        CGContextFlush(node->feedback_window.context);
+        SLSReenableUpdate(g_connection);
+        SLSOrderWindow(g_connection, node->feedback_window.id, 1, node->window_order[0]);
         table_add(&g_window_manager.insert_feedback, &node->window_order[0], node);
         insert_feedback_update_notifications();
-        created = true;
     }
 
-    frame.origin.x = 0; frame.origin.y = 0;
     CGFloat clip_x, clip_y, clip_w, clip_h;
     CGFloat midx = CGRectGetMidX(frame);
     CGFloat midy = CGRectGetMidY(frame);
@@ -115,8 +118,6 @@ void insert_feedback_show(struct window_node *node)
     SLSReenableUpdate(g_connection);
     CGPathRelease(path);
     CFRelease(frame_region);
-
-    if (created) SLSOrderWindow(g_connection, node->feedback_window.id, 1, node->window_order[0]);
 }
 
 void insert_feedback_destroy(struct window_node *node)
@@ -135,6 +136,11 @@ void insert_feedback_destroy(struct window_node *node)
 static inline struct area area_from_cgrect(CGRect rect)
 {
     return (struct area) { rect.origin.x, rect.origin.y, rect.size.width, rect.size.height };
+}
+
+static inline CGPoint area_max_point(struct area area)
+{
+    return (CGPoint) { area.x + area.w - 1, area.y + area.h - 1 };
 }
 
 static inline enum window_node_child window_node_get_child(struct window_node *node)
@@ -156,7 +162,7 @@ static inline float window_node_get_ratio(struct window_node *node)
 
 static inline int window_node_get_gap(struct view *view)
 {
-    return view->enable_gap ? view->window_gap : 0;
+    return view_check_flag(view, VIEW_ENABLE_GAP) ? view->window_gap : 0;
 }
 
 static void area_make_pair(enum window_node_split split, int gap, float ratio, struct area *parent_area, struct area *left_area, struct area *right_area)
@@ -598,26 +604,15 @@ struct window_node *view_find_window_node_in_direction(struct view *view, struct
     int best_distance = INT_MAX;
     int best_rank = INT_MAX;
     struct window_node *best_node = NULL;
-
-    CGPoint source_area_max = { source->area.x + source->area.w - 1, source->area.y + source->area.h - 1};
+    CGPoint source_area_max = area_max_point(source->area);
 
     struct window_node *target = window_node_find_first_leaf(view->root);
     while (target) {
-        if (target->zoom == view->root) {
-          if (target != source) return target;
-          else return NULL;
-        }
+        if (source == target) goto next;
 
-        if (source == target || window_node_is_occluded_by_zoom(target))
-          goto next;
-
-        struct area* target_area = target->zoom
-                                    ? &target->zoom->area
-                                    : &target->area;
-
-        CGPoint target_area_max = { target_area->x + target_area->w - 1, target_area->y + target_area->h - 1 };
-        if (area_is_in_direction(&source->area, source_area_max, target_area, target_area_max, direction)) {
-            int distance = area_distance_in_direction(&source->area, source_area_max, target_area, target_area_max, direction);
+        CGPoint target_area_max = area_max_point(target->area);
+        if (area_is_in_direction(&source->area, source_area_max, &target->area, target_area_max, direction)) {
+            int distance = area_distance_in_direction(&source->area, source_area_max, &target->area, target_area_max, direction);
             int rank = window_manager_find_rank_of_window_in_list(target->window_order[0], window_list, window_count);
             if ((distance < best_distance) || (distance == best_distance && rank < best_rank)) {
                 best_node = target;
@@ -744,7 +739,7 @@ struct window_node *view_remove_window_node(struct view *view, struct window *wi
     free(child);
     free(node);
 
-    if (g_space_manager.auto_balance) {
+    if (view->auto_balance) {
         window_node_balance(view->root, SPLIT_X | SPLIT_Y);
         view_update(view);
         return view->root;
@@ -800,7 +795,7 @@ struct window_node *view_add_window_node_with_insertion_point(struct view *view,
 
         window_node_split(view, leaf, window);
 
-        if (g_space_manager.auto_balance) {
+        if (view->auto_balance) {
             window_node_balance(view->root, SPLIT_X | SPLIT_Y);
             view_update(view);
             return view->root;
@@ -859,80 +854,130 @@ uint32_t *view_find_window_list(struct view *view, int *window_count)
 
 bool view_is_invalid(struct view *view)
 {
-    return !view->is_valid;
+    return !view_check_flag(view, VIEW_IS_VALID);
 }
 
 bool view_is_dirty(struct view *view)
 {
-    return view->is_dirty;
+    return view_check_flag(view, VIEW_IS_DIRTY);
 }
 
 void view_flush(struct view *view)
 {
     if (space_is_visible(view->sid)) {
         window_node_flush(view->root);
-        view->is_dirty = false;
+        view_clear_flag(view, VIEW_IS_DIRTY);
     } else {
-        view->is_dirty = true;
+        view_set_flag(view, VIEW_IS_DIRTY);
     }
 }
 
-void view_serialize(FILE *rsp, struct view *view)
+void view_serialize(FILE *rsp, struct view *view, uint64_t flags)
 {
     TIME_FUNCTION;
 
-    char *uuid = ts_cfstring_copy(view->suuid);
-    int buffer_size = MAXLEN;
-    size_t bytes_written = 0;
-    char buffer[MAXLEN] = {};
-    char *cursor = buffer;
+    if (flags == 0x0) flags |= ~flags;
 
-    int window_count = 0;
-    uint32_t *window_list = space_window_list(view->sid, &window_count, true);
+    bool did_output = false;
+    fprintf(rsp, "{\n");
 
-    for (int i = 0; i < window_count; ++i) {
-        if (i < window_count - 1) {
-            bytes_written = snprintf(cursor, buffer_size, "%d, ", window_list[i]);
-        } else {
-            bytes_written = snprintf(cursor, buffer_size, "%d", window_list[i]);
-        }
-
-        cursor += bytes_written;
-        buffer_size -= bytes_written;
-        if (buffer_size <= 0) break;
+    if (flags & SPACE_PROPERTY_ID) {
+        fprintf(rsp, "\t\"id\":%lld", view->sid);
+        did_output = true;
     }
 
-    struct space_label *space_label = space_manager_get_label_for_space(&g_space_manager, view->sid);
-    struct window_node *first_leaf = window_node_find_first_leaf(view->root);
-    struct window_node *last_leaf = window_node_find_last_leaf(view->root);
+    if (flags & SPACE_PROPERTY_UUID) {
+        if (did_output) fprintf(rsp, ",\n");
 
-    fprintf(rsp,
-            "{\n"
-            "\t\"id\":%lld,\n"
-            "\t\"uuid\":\"%s\",\n"
-            "\t\"index\":%d,\n"
-            "\t\"label\":\"%s\",\n"
-            "\t\"type\":\"%s\",\n"
-            "\t\"display\":%d,\n"
-            "\t\"windows\":[%s],\n"
-            "\t\"first-window\":%d,\n"
-            "\t\"last-window\":%d,\n"
-            "\t\"has-focus\":%s,\n"
-            "\t\"is-visible\":%s,\n"
-            "\t\"is-native-fullscreen\":%s\n"
-            "}",
-            view->sid,
-            uuid ? uuid : "<unknown>",
-            space_manager_mission_control_index(view->sid),
-            space_label ? space_label->label : "",
-            view_type_str[view->layout],
-            display_manager_display_id_arrangement(space_display_id(view->sid)),
-            buffer,
-            first_leaf ? first_leaf->window_order[0] : 0,
-            last_leaf ? last_leaf->window_order[0] : 0,
-            json_bool(view->sid == g_space_manager.current_space_id),
-            json_bool(space_is_visible(view->sid)),
-            json_bool(space_is_fullscreen(view->sid)));
+        char *uuid = ts_cfstring_copy(view->uuid);
+        fprintf(rsp, "\t\"uuid\":\"%s\"", uuid ? uuid : "<unknown>");
+        did_output = true;
+    }
+
+    if (flags & SPACE_PROPERTY_INDEX) {
+        if (did_output) fprintf(rsp, ",\n");
+
+        fprintf(rsp, "\t\"index\":%d", space_manager_mission_control_index(view->sid));
+        did_output = true;
+    }
+
+    if (flags & SPACE_PROPERTY_LABEL) {
+        if (did_output) fprintf(rsp, ",\n");
+
+        struct space_label *space_label = space_manager_get_label_for_space(&g_space_manager, view->sid);
+        fprintf(rsp, "\t\"label\":\"%s\"", space_label ? space_label->label : "");
+        did_output = true;
+    }
+
+    if (flags & SPACE_PROPERTY_TYPE) {
+        if (did_output) fprintf(rsp, ",\n");
+
+        fprintf(rsp, "\t\"type\":\"%s\"", view_type_str[view->layout]);
+        did_output = true;
+    }
+
+    if (flags & SPACE_PROPERTY_DISPLAY) {
+        if (did_output) fprintf(rsp, ",\n");
+
+        fprintf(rsp, "\t\"display\":%d", display_manager_display_id_arrangement(space_display_id(view->sid)));
+        did_output = true;
+    }
+
+    if (flags & SPACE_PROPERTY_WINDOWS) {
+        if (did_output) fprintf(rsp, ",\n");
+
+        int window_count = 0;
+        uint32_t *window_list = space_window_list(view->sid, &window_count, true);
+
+        fprintf(rsp, "\t\"windows\":[");
+        for (int i = 0; i < window_count; ++i) {
+            if (i < window_count - 1) {
+                fprintf(rsp, "%d, ", window_list[i]);
+            } else {
+                fprintf(rsp, "%d", window_list[i]);
+            }
+        }
+        fprintf(rsp, "]");
+        did_output = true;
+    }
+
+    if (flags & SPACE_PROPERTY_FIRST_WINDOW) {
+        if (did_output) fprintf(rsp, ",\n");
+
+        struct window_node *first_leaf = window_node_find_first_leaf(view->root);
+        fprintf(rsp, "\t\"first-window\":%d", first_leaf ? first_leaf->window_order[0] : 0);
+        did_output = true;
+    }
+
+    if (flags & SPACE_PROPERTY_LAST_WINDOW) {
+        if (did_output) fprintf(rsp, ",\n");
+
+        struct window_node *last_leaf = window_node_find_last_leaf(view->root);
+        fprintf(rsp, "\t\"last-window\":%d", last_leaf ? last_leaf->window_order[0] : 0);
+        did_output = true;
+    }
+
+    if (flags & SPACE_PROPERTY_HAS_FOCUS) {
+        if (did_output) fprintf(rsp, ",\n");
+
+        fprintf(rsp, "\t\"has-focus\":%s", json_bool(view->sid == g_space_manager.current_space_id));
+        did_output = true;
+    }
+
+    if (flags & SPACE_PROPERTY_IS_VISIBLE) {
+        if (did_output) fprintf(rsp, ",\n");
+
+        fprintf(rsp, "\t\"is-visible\":%s", json_bool(space_is_visible(view->sid)));
+        did_output = true;
+    }
+
+    if (flags & SPACE_PROPERTY_IS_FULLSCREEN) {
+        if (did_output) fprintf(rsp, ",\n");
+
+        fprintf(rsp, "\t\"is-native-fullscreen\":%s", json_bool(space_is_fullscreen(view->sid)));
+    }
+
+    fprintf(rsp, "\n}");
 }
 
 void view_update(struct view *view)
@@ -941,7 +986,7 @@ void view_update(struct view *view)
     CGRect frame = display_bounds_constrained(did);
     view->root->area = area_from_cgrect(frame);
 
-    if (view->enable_padding) {
+    if (view_check_flag(view, VIEW_ENABLE_PADDING)) {
         view->root->area.x += view->left_padding;
         view->root->area.w -= (view->left_padding + view->right_padding);
         view->root->area.y += view->top_padding;
@@ -949,8 +994,8 @@ void view_update(struct view *view)
     }
 
     window_node_update(view, view->root);
-    view->is_valid = true;
-    view->is_dirty = true;
+    view_set_flag(view, VIEW_IS_VALID);
+    view_set_flag(view, VIEW_IS_DIRTY);
 }
 
 struct view *view_create(uint64_t sid)
@@ -961,18 +1006,20 @@ struct view *view_create(uint64_t sid)
     view->root = malloc(sizeof(struct window_node));
     memset(view->root, 0, sizeof(struct window_node));
 
-    view->enable_padding = true;
-    view->enable_gap = true;
     view->sid = sid;
-    view->suuid = SLSSpaceCopyName(g_connection, sid);
+    view->uuid = SLSSpaceCopyName(g_connection, sid);
+
+    view_set_flag(view, VIEW_ENABLE_PADDING);
+    view_set_flag(view, VIEW_ENABLE_GAP);
 
     if (space_is_user(view->sid)) {
-        if (!view->custom_layout)         view->layout         = g_space_manager.layout;
-        if (!view->custom_top_padding)    view->top_padding    = g_space_manager.top_padding;
-        if (!view->custom_bottom_padding) view->bottom_padding = g_space_manager.bottom_padding;
-        if (!view->custom_left_padding)   view->left_padding   = g_space_manager.left_padding;
-        if (!view->custom_right_padding)  view->right_padding  = g_space_manager.right_padding;
-        if (!view->custom_window_gap)     view->window_gap     = g_space_manager.window_gap;
+        if (!view_check_flag(view, VIEW_LAYOUT))         view->layout         = g_space_manager.layout;
+        if (!view_check_flag(view, VIEW_TOP_PADDING))    view->top_padding    = g_space_manager.top_padding;
+        if (!view_check_flag(view, VIEW_BOTTOM_PADDING)) view->bottom_padding = g_space_manager.bottom_padding;
+        if (!view_check_flag(view, VIEW_LEFT_PADDING))   view->left_padding   = g_space_manager.left_padding;
+        if (!view_check_flag(view, VIEW_RIGHT_PADDING))  view->right_padding  = g_space_manager.right_padding;
+        if (!view_check_flag(view, VIEW_WINDOW_GAP))     view->window_gap     = g_space_manager.window_gap;
+        if (!view_check_flag(view, VIEW_AUTO_BALANCE))   view->auto_balance   = g_space_manager.auto_balance;
         view_update(view);
     } else {
         view->layout = VIEW_FLOAT;

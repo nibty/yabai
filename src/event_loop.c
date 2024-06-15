@@ -56,25 +56,6 @@ static EVENT_HANDLER(APPLICATION_LAUNCHED)
         return;
     }
 
-    if (!workspace_application_is_observable(process)) {
-        debug("%s: %s (%d) is not observable, subscribing to activationPolicy changes\n", __FUNCTION__, process->name, process->pid);
-        workspace_application_observe_activation_policy(g_workspace_context, process);
-
-        //
-        // NOTE(koekeishiya): Do this again in case of race-conditions between the previous check and key-value observation subscription.
-        // Not actually sure if this can happen in practice..
-        //
-
-        if (workspace_application_is_observable(process)) {
-            @try {
-                NSRunningApplication *application = __atomic_load_n(&process->ns_application, __ATOMIC_RELAXED);
-                if (application && [application observationInfo]) {
-                    [application removeObserver:g_workspace_context forKeyPath:@"activationPolicy" context:process];
-                }
-            } @catch (NSException * __unused exception) {}
-        } else { return; }
-    }
-
     if (!workspace_application_is_finished_launching(process)) {
         debug("%s: %s (%d) is not finished launching, subscribing to finishedLaunching changes\n", __FUNCTION__, process->name, process->pid);
         workspace_application_observe_finished_launching(g_workspace_context, process);
@@ -89,6 +70,25 @@ static EVENT_HANDLER(APPLICATION_LAUNCHED)
                 NSRunningApplication *application = __atomic_load_n(&process->ns_application, __ATOMIC_RELAXED);
                 if (application && [application observationInfo]) {
                     [application removeObserver:g_workspace_context forKeyPath:@"finishedLaunching" context:process];
+                }
+            } @catch (NSException * __unused exception) {}
+        } else { return; }
+    }
+
+    if (!workspace_application_is_observable(process)) {
+        debug("%s: %s (%d) is not observable, subscribing to activationPolicy changes\n", __FUNCTION__, process->name, process->pid);
+        workspace_application_observe_activation_policy(g_workspace_context, process);
+
+        //
+        // NOTE(koekeishiya): Do this again in case of race-conditions between the previous check and key-value observation subscription.
+        // Not actually sure if this can happen in practice..
+        //
+
+        if (workspace_application_is_observable(process)) {
+            @try {
+                NSRunningApplication *application = __atomic_load_n(&process->ns_application, __ATOMIC_RELAXED);
+                if (application && [application observationInfo]) {
+                    [application removeObserver:g_workspace_context forKeyPath:@"activationPolicy" context:process];
                 }
             } @catch (NSException * __unused exception) {}
         } else { return; }
@@ -181,7 +181,7 @@ static EVENT_HANDLER(APPLICATION_LAUNCHED)
             view_add_window_node_with_insertion_point(view, window, prev_window_id);
             window_manager_add_managed_window(&g_window_manager, window, view);
 
-            view->is_dirty = true;
+            view_set_flag(view, VIEW_IS_DIRTY);
             view_list[view_count++] = view;
 
             prev_window_id = window->id;
@@ -208,7 +208,7 @@ next:
         if (!view_is_dirty(view))         continue;
 
         window_node_flush(view->root);
-        view->is_dirty = false;
+        view_clear_flag(view, VIEW_IS_DIRTY);
     }
 }
 
@@ -226,6 +226,13 @@ static EVENT_HANDLER(APPLICATION_TERMINATED)
     event_signal_push(SIGNAL_APPLICATION_TERMINATED, application);
     window_manager_remove_application(&g_window_manager, application->pid);
 
+    for (int i = 0; i < buf_len(g_window_manager.applications_to_refresh); ++i) {
+        if (application == g_window_manager.applications_to_refresh[i]) {
+            buf_del(g_window_manager.applications_to_refresh, i);
+            break;
+        }
+    }
+
     int window_count;
     struct window **window_list = window_manager_find_application_windows(&g_window_manager, application, &window_count);
 
@@ -234,7 +241,11 @@ static EVENT_HANDLER(APPLICATION_TERMINATED)
 
     for (int i = 0; i < window_count; ++i) {
         struct window *window = window_list[i];
-        __atomic_store_n(&window->id_ptr, NULL, __ATOMIC_RELEASE);
+
+        if (!__sync_bool_compare_and_swap(&window->id_ptr, &window->id, NULL)) {
+            window->application = NULL;
+            continue;
+        }
 
         struct view *view = window_manager_find_managed_window(&g_window_manager, window);
         if (view) {
@@ -263,7 +274,7 @@ static EVENT_HANDLER(APPLICATION_TERMINATED)
 
             window_manager_remove_managed_window(&g_window_manager, window->id);
 
-            view->is_dirty = true;
+            view_set_flag(view, VIEW_IS_DIRTY);
             view_list[view_count++] = view;
         }
 
@@ -273,6 +284,7 @@ static EVENT_HANDLER(APPLICATION_TERMINATED)
             event_signal_push(SIGNAL_WINDOW_DESTROYED, window);
         }
 
+        window_manager_remove_scratchpad_for_window(&g_window_manager, window, false);
         window_manager_remove_window(&g_window_manager, window->id);
         window_unobserve(window);
         window_destroy(window);
@@ -295,7 +307,8 @@ static EVENT_HANDLER(APPLICATION_TERMINATED)
         if (!space_is_visible(view->sid)) continue;
         if (!view_is_dirty(view))         continue;
 
-        space_manager_refresh_view(&g_space_manager, view->sid);
+        window_node_flush(view->root);
+        view_clear_flag(view, VIEW_IS_DIRTY);
     }
 
 out:
@@ -323,6 +336,14 @@ static EVENT_HANDLER(APPLICATION_FRONT_SWITCHED)
     g_process_manager.last_front_pid = g_process_manager.front_pid;
     g_process_manager.front_pid = process->pid;
     event_signal_push(SIGNAL_APPLICATION_FRONT_SWITCHED, NULL);
+
+    for (int i = 0; i < buf_len(g_window_manager.applications_to_refresh); ++i) {
+        if (application == g_window_manager.applications_to_refresh[i]) {
+            debug("%s: %s has windows that are not yet resolved\n", __FUNCTION__, application->name);
+            window_manager_add_existing_application_windows(&g_space_manager, &g_window_manager, application, i);
+            break;
+        }
+    }
 
     uint32_t application_focused_window_id = application_focused_window(application);
     if (!application_focused_window_id) {
@@ -390,7 +411,7 @@ static EVENT_HANDLER(APPLICATION_VISIBLE)
             view_add_window_node_with_insertion_point(view, window, prev_window_id);
             window_manager_add_managed_window(&g_window_manager, window, view);
 
-            view->is_dirty = true;
+            view_set_flag(view, VIEW_IS_DIRTY);
             view_list[view_count++] = view;
 
             prev_window_id = window->id;
@@ -412,7 +433,7 @@ static EVENT_HANDLER(APPLICATION_VISIBLE)
         if (!view_is_dirty(view))         continue;
 
         window_node_flush(view->root);
-        view->is_dirty = false;
+        view_clear_flag(view, VIEW_IS_DIRTY);
     }
 
     event_signal_push(SIGNAL_APPLICATION_VISIBLE, application);
@@ -453,7 +474,7 @@ static EVENT_HANDLER(APPLICATION_HIDDEN)
             window_manager_remove_managed_window(&g_window_manager, window->id);
             window_manager_purify_window(&g_window_manager, window);
 
-            view->is_dirty = true;
+            view_set_flag(view, VIEW_IS_DIRTY);
             view_list[view_count++] = view;
         }
     }
@@ -473,7 +494,7 @@ static EVENT_HANDLER(APPLICATION_HIDDEN)
         if (!view_is_dirty(view))         continue;
 
         window_node_flush(view->root);
-        view->is_dirty = false;
+        view_clear_flag(view, VIEW_IS_DIRTY);
     }
 
     event_signal_push(SIGNAL_APPLICATION_HIDDEN, application);
@@ -535,7 +556,7 @@ static EVENT_HANDLER(WINDOW_DESTROYED)
         return;
     }
 
-    debug("%s: %s %d\n", __FUNCTION__, window->application->name, window->id);
+    debug("%s: %s %d\n", __FUNCTION__, window->application ? window->application->name : "<unknown>", window->id);
 
     struct view *view = window_manager_find_managed_window(&g_window_manager, window);
     struct window *next_window = window_manager_find_natural_next_window(&g_space_manager, &g_window_manager, window);
@@ -553,6 +574,7 @@ static EVENT_HANDLER(WINDOW_DESTROYED)
         event_signal_push(SIGNAL_WINDOW_DESTROYED, window);
     }
 
+    window_manager_remove_scratchpad_for_window(&g_window_manager, window, false);
     window_manager_remove_window(&g_window_manager, window->id);
     window_destroy(window);
 }
@@ -624,7 +646,7 @@ static EVENT_HANDLER(WINDOW_MOVED)
                 if (space_is_visible(view->sid)) {
                     window_node_flush(node);
                 } else {
-                    view->is_dirty = true;
+                    view_set_flag(view, VIEW_IS_DIRTY);
                 }
             }
         }
@@ -702,7 +724,7 @@ static EVENT_HANDLER(WINDOW_RESIZED)
                     if (space_is_visible(view->sid)) {
                         window_node_flush(node);
                     } else {
-                        view->is_dirty = true;
+                        view_set_flag(view, VIEW_IS_DIRTY);
                     }
                 }
             }
@@ -831,8 +853,14 @@ static EVENT_HANDLER(SPACE_CHANGED)
     if (!mission_control_is_active() && space_is_user(g_space_manager.current_space_id)) {
         window_manager_validate_and_check_for_windows_on_space(&g_space_manager, &g_window_manager, g_space_manager.current_space_id);
 
-        if (view_is_invalid(view)) view_update(view);
-        if (view_is_dirty(view))   view_flush(view);
+        if (view_is_invalid(view)) {
+            view_update(view);
+        }
+
+        if (view_is_dirty(view)) {
+            window_node_flush(view->root);
+            view_clear_flag(view, VIEW_IS_DIRTY);
+        }
     }
 
     event_signal_push(SIGNAL_SPACE_CHANGED, NULL);
@@ -877,8 +905,14 @@ static EVENT_HANDLER(DISPLAY_CHANGED)
     if (!mission_control_is_active() && space_is_user(g_space_manager.current_space_id)) {
         window_manager_validate_and_check_for_windows_on_space(&g_space_manager, &g_window_manager, g_space_manager.current_space_id);
 
-        if (view_is_invalid(view)) view_update(view);
-        if (view_is_dirty(view))   view_flush(view);
+        if (view_is_invalid(view)) {
+            view_update(view);
+        }
+
+        if (view_is_dirty(view)) {
+            window_node_flush(view->root);
+            view_clear_flag(view, VIEW_IS_DIRTY);
+        }
     }
 
     event_signal_push(SIGNAL_DISPLAY_CHANGED, NULL);
@@ -1068,7 +1102,7 @@ static EVENT_HANDLER(MOUSE_DRAGGED)
     } else if (g_mouse_state.current_action == MOUSE_MODE_RESIZE) {
         uint64_t event_time = read_os_timer();
         float dt = ((float) event_time - g_mouse_state.last_moved_time) * (1000.0f / (float)read_os_freq());
-        if (dt < 16.67f) goto out;
+        if (dt < 67.67f) goto out;
 
         int dx = point.x - g_mouse_state.down_location.x;
         int dy = point.y - g_mouse_state.down_location.y;
@@ -1355,8 +1389,9 @@ static int is_menu_open = 0;
 static EVENT_HANDLER(MENU_OPENED)
 {
     debug("%s\n", __FUNCTION__);
+    ++is_menu_open;
 
-    if (++is_menu_open == 1) {
+    if (is_menu_open == 1) {
         ffm_value = g_window_manager.ffm_mode;
         g_window_manager.ffm_mode = FFM_DISABLED;
     }
@@ -1365,8 +1400,13 @@ static EVENT_HANDLER(MENU_OPENED)
 static EVENT_HANDLER(MENU_CLOSED)
 {
     debug("%s\n", __FUNCTION__);
+    --is_menu_open;
 
-    if (--is_menu_open == 0) {
+    if (is_menu_open < 0) {
+        is_menu_open = 0;
+    }
+
+    if (is_menu_open == 0) {
         g_window_manager.ffm_mode = ffm_value;
     }
 }

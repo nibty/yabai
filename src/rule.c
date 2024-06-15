@@ -5,6 +5,16 @@ void rule_serialize(FILE *rsp, struct rule *rule, int index)
 {
     TIME_FUNCTION;
 
+    char *app   = rule->app;
+    char *title = rule->title;
+    char *role  = rule->role;
+    char *srole = rule->subrole;
+
+    char *escaped_app   = app   ? ts_string_escape(app)   : NULL;
+    char *escaped_title = title ? ts_string_escape(title) : NULL;
+    char *escaped_role  = role  ? ts_string_escape(role)  : NULL;
+    char *escaped_srole = srole ? ts_string_escape(srole) : NULL;
+
     fprintf(rsp,
             "{\n"
             "\t\"index\":%d,\n"
@@ -23,17 +33,18 @@ void rule_serialize(FILE *rsp, struct rule *rule, int index)
             "\t\"sub-layer\":\"%s\",\n"
             "\t\"native-fullscreen\":%s,\n"
             "\t\"grid\":\"%d:%d:%d:%d:%d:%d\",\n"
+            "\t\"scratchpad\":\"%s\",\n"
             "\t\"one-shot\":%s,\n"
             "\t\"flags\":\"0x%08x\"\n"
             "}",
             index,
             rule->label ? rule->label : "",
-            rule->app ? rule->app : "",
-            rule->title ? rule->title : "",
-            rule->role ? rule->role : "",
-            rule->subrole ? rule->subrole : "",
-            display_manager_display_id_arrangement(rule->effects.did),
-            space_manager_mission_control_index(rule->effects.sid),
+            escaped_app ? escaped_app : app ? app : "",
+            escaped_title ? escaped_title : title ? title : "",
+            escaped_role ? escaped_role : role ? role : "",
+            escaped_srole ? escaped_srole : srole ? srole : "",
+            rule->effects.did ? display_manager_display_id_arrangement(rule->effects.did) : 0,
+            rule->effects.sid ? space_manager_mission_control_index(rule->effects.sid) : 0,
             json_bool(rule_effects_check_flag(&rule->effects, RULE_FOLLOW_SPACE)),
             rule->effects.opacity,
             json_optional_bool(rule->effects.manage),
@@ -44,6 +55,7 @@ void rule_serialize(FILE *rsp, struct rule *rule, int index)
             rule->effects.grid[0], rule->effects.grid[1],
             rule->effects.grid[2], rule->effects.grid[3],
             rule->effects.grid[4], rule->effects.grid[5],
+            rule->effects.scratchpad ? rule->effects.scratchpad : "",
             json_bool(rule_check_flag(rule, RULE_ONE_SHOT)),
             (uint32_t)(rule->effects.flags << 16) | (uint32_t)rule->flags);
 }
@@ -76,6 +88,11 @@ void rule_combine_effects(struct rule_effects *effects, struct rule_effects *res
     if (rule_effects_check_flag(effects, RULE_LAYER)) {
         result->layer = effects->layer;
         rule_effects_set_flag(result, RULE_LAYER);
+    }
+
+    if (effects->scratchpad) {
+        if (result->scratchpad) free(result->scratchpad);
+        result->scratchpad = string_copy(effects->scratchpad);
     }
 
     if (effects->manage     != RULE_PROP_UD) result->manage     = effects->manage;
@@ -219,4 +236,6 @@ void rule_destroy(struct rule *rule)
     if (rule->title)   free(rule->title);
     if (rule->role)    free(rule->role);
     if (rule->subrole) free(rule->subrole);
+
+    if (rule->effects.scratchpad) free(rule->effects.scratchpad);
 }
